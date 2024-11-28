@@ -1,4 +1,5 @@
 import os
+import shutil
 from fastapi import (
     FastAPI,
     Header,
@@ -6,15 +7,20 @@ from fastapi import (
     Body,
     BackgroundTasks,
     Request,
+    File,
+    UploadFile,
 )
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pydantic import BaseModel
 import torch
 from transformers import pipeline
 from .diarization_pipeline import diarize
+from .utils import write_result, chunk2segment
 import requests
 import asyncio
 import uuid
+import pdb
+from io import StringIO
 
 
 admin_key = os.environ.get(
@@ -25,14 +31,22 @@ hf_token = os.environ.get(
     "HF_TOKEN",
 )
 
+model_name = os.environ.get(
+    "MODEL",
+    "openai/whisper-large-v3"
+)
+
 # fly runtime env https://fly.io/docs/machines/runtime-environment
 fly_machine_id = os.environ.get(
     "FLY_MACHINE_ID",
 )
 
+UPLOAD_DIRECTORY = os.path.join(os.getcwd(), "uploads")
+os.makedirs(UPLOAD_DIRECTORY, exist_ok=True)
+
 pipe = pipeline(
     "automatic-speech-recognition",
-    model="openai/whisper-large-v3",
+    model=model_name,
     torch_dtype=torch.float16,
     device="cuda:0",
     model_kwargs=({"attn_implementation": "flash_attention_2"}),
@@ -55,6 +69,7 @@ def process(
     batch_size: int,
     timestamp: str,
     diarise_audio: bool,
+    formats: list[str] = None,  # New parameter
     webhook: WebhookBody | None = None,
     task_id: str | None = None,
 ):
@@ -81,6 +96,11 @@ def process(
                 outputs,
             )
             outputs["speakers"] = speakers_transcript
+
+        # New section to handle multiple formats
+        if formats:
+            outputs.update(format_outputs(outputs, formats))
+
     except asyncio.CancelledError:
         errorMessage = "Task Cancelled"
     except Exception as e:
@@ -110,6 +130,25 @@ def process(
 
     return outputs
 
+def format_outputs(outputs, formats):
+    formated = {}
+    valid_formats = ['srt', 'vtt', 'lrc', 'tsv', 'txt']
+
+    for format_type in formats:
+        if format_type in valid_formats:
+            # Create a StringIO buffer to write the formatted output
+            buffer = StringIO()
+            segments = {'segments': [chunk2segment(c) for c in outputs['chunks']]}
+            write_result(segments, buffer, format_type)
+            
+            # Get the contents of the StringIO buffer
+            formated[format_type] = buffer.getvalue()
+
+            # Close the buffer
+            buffer.close()
+
+    return formated
+
 
 @app.middleware("http")
 async def admin_key_auth_check(request: Request, call_next):
@@ -129,9 +168,8 @@ def root(
     language: str = Body(default="None"),
     batch_size: int = Body(default=64),
     timestamp: str = Body(default="chunk", enum=["chunk", "word"]),
-    diarise_audio: bool = Body(
-        default=False,
-    ),
+    diarise_audio: bool = Body(default=False),
+    formats: list[str] | None = Body(default=None, enum=['srt', 'vtt', 'lrc', 'tsv', 'txt']),
     webhook: WebhookBody | None = None,
     is_async: bool = Body(default=False),
     managed_task_id: str | None = Body(default=None),
@@ -162,6 +200,7 @@ def root(
                     batch_size,
                     timestamp,
                     diarise_audio,
+                    formats,
                     webhook,
                     task_id,
                 )
@@ -181,6 +220,7 @@ def root(
                 batch_size,
                 timestamp,
                 diarise_audio,
+                formats,
                 webhook,
                 task_id,
             )
@@ -231,3 +271,89 @@ def cancel(task_id: str):
         return {"status": "cancelled"}
     else:
         return {"status": "completed", "output": task.result()}
+
+
+@app.post("/files")
+async def upload_file(file: UploadFile = File(...)):
+    """
+    Upload a file to the server
+    
+    Args:
+    - file: The file to be uploaded
+    
+    Returns:
+    - A dictionary with file details and upload status
+    """
+    # Generate a unique filename to prevent overwriting
+    file_extension = file.filename.split('.')[-1] if '.' in file.filename else ''
+    unique_filename = f"{uuid.uuid4()}.{file_extension}"
+    file_path = os.path.join(UPLOAD_DIRECTORY, unique_filename)
+
+    # Save the file
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+
+    return {
+        "filename": unique_filename,
+        "original_filename": file.filename,
+        "status": "uploaded"
+    }
+
+
+@app.get("/files")
+def list_files():
+    """
+    List all uploaded files
+    
+    Returns:
+    - A list of filenames in the upload directory
+    """
+    files = os.listdir(UPLOAD_DIRECTORY)
+    return {"files": files}
+
+
+@app.get("/files/{filename}")
+def download_file(filename: str):
+    """
+    Download a specific file
+    
+    Args:
+    - filename: The name of the file to download
+    
+    Returns:
+    - The file as a download
+    """
+    file_path = os.path.join(UPLOAD_DIRECTORY, filename)
+    
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    return FileResponse(
+        file_path, 
+        media_type='application/octet-stream', 
+        filename=filename
+    )
+
+
+@app.delete("/files/{filename}")
+def delete_file(filename: str):
+    """
+    Delete a specific file
+    
+    Args:
+    - filename: The name of the file to delete
+    
+    Returns:
+    - A status message confirming deletion
+    """
+    file_path = os.path.join(UPLOAD_DIRECTORY, filename)
+    
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    os.remove(file_path)
+    
+    return {
+        "filename": filename,
+        "status": "deleted"
+    }
