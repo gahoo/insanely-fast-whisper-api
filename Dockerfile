@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/pytorch:24.01-py3
+FROM nvcr.io/nvidia/cuda:12.6.2-devel-ubuntu22.04 as builder
 
 ENV PYTHON_VERSION=3.10
 ENV POETRY_VENV=/app/.venv
@@ -6,9 +6,10 @@ ENV POETRY_VENV=/app/.venv
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python${PYTHON_VERSION}-venv \
     ffmpeg \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python -m venv $POETRY_VENV \
+RUN python3 -m venv $POETRY_VENV \
     && $POETRY_VENV/bin/pip install -U pip setuptools \
     && $POETRY_VENV/bin/pip install poetry==1.7.1
 
@@ -28,6 +29,21 @@ RUN $POETRY_VENV/bin/pip install -U wheel \
     && $POETRY_VENV/bin/pip install ninja packaging
 
 RUN $POETRY_VENV/bin/pip install flash-attn --no-build-isolation
+RUN $POETRY_VENV/bin/pip install python-multipart
+
+
+FROM nvcr.io/nvidia/cuda:12.6.2-runtime-ubuntu22.04
+
+ENV PYTHON_VERSION=3.10
+ENV POETRY_VENV=/app/.venv
+ENV PATH="${PATH}:${POETRY_VENV}/bin"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python${PYTHON_VERSION}-venv \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app /app
 
 EXPOSE 9000
 
