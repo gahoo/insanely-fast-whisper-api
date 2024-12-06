@@ -5,12 +5,24 @@ import pdb
 
 class Segment:
     def __init__(self, start, end, text):
-        self.start = start
-        self.end = end
+        if start is None:
+            self.start = 0
+            print('start is zero:' + text)
+        else:
+            self.start = start
+        if end is None:
+            self.end = 0
+            print('end is zero:' + text)
+        else:
+            self.end = end
         self.text = text
 
 def chunk2segment(chunk):
     segment = Segment(chunk['timestamp'][0], chunk['timestamp'][1], chunk['text'])
+    return segment
+
+def speakers2segment(chunk):
+    segment = Segment(chunk['timestamp'][0], chunk['timestamp'][1], "[{speaker}]: {text}".format(speaker=chunk['speaker'], text=chunk['text']))
     return segment
 
 # Borrow from https://github.com/SYSTRAN/faster-whisper/blob/97a4785fa13d067c300f8b6e40c4381ad0381c02/faster_whisper/utils.py#L126

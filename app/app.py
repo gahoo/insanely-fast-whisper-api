@@ -15,7 +15,7 @@ from pydantic import BaseModel
 import torch
 from transformers import pipeline
 from .diarization_pipeline import diarize
-from .utils import write_result, chunk2segment
+from .utils import write_result, chunk2segment, speakers2segment
 import requests
 import asyncio
 import uuid
@@ -138,7 +138,10 @@ def format_outputs(outputs, formats):
         if format_type in valid_formats:
             # Create a StringIO buffer to write the formatted output
             buffer = StringIO()
-            segments = {'segments': [chunk2segment(c) for c in outputs['chunks']]}
+            if 'speakers':
+                segments = {'segments': [speakers2segment(c) for c in outputs['speakers']]}
+            else:
+                segments = {'segments': [chunk2segment(c) for c in outputs['chunks']]}
             write_result(segments, buffer, format_type)
             
             # Get the contents of the StringIO buffer
